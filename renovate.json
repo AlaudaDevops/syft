@@ -4,6 +4,16 @@
     "github>AlaudaDevops/renovate-config:base"
   ],
   "baseBranches": [
-    "$default"
+    "/^alauda-v.*/"
+  ],
+  "postUpdateOptions": [
+    "gomodTidy"
+  ],
+  "assignees": [
+    "yuzichen12123"
+  ],
+  "ignorePaths": [
+    "**/test/**",
+    "**/test-fixtures/**"
   ]
 }

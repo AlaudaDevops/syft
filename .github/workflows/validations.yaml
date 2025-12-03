@@ -34,6 +34,14 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
 
+      - name: Free disk space
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+          docker system prune -af || true
+          df -h
+
       - name: Bootstrap environment
         uses: ./.github/actions/bootstrap
         with:

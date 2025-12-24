@@ -72,8 +72,7 @@ func TestSearchMavenForLicenses(t *testing.T) {
 			require.NoError(t, err)
 
 			// setup parser
-			ap, cleanupFn, err := newJavaArchiveParser(
-				ctx,
+			ap, cleanupFn, err := newJavaArchiveParser(context.Background(),
 				file.LocationReadCloser{
 					Location:   file.NewLocation(fixture.Name()),
 					ReadCloser: fixture,
@@ -343,8 +342,7 @@ func TestParseJar(t *testing.T) {
 				UseNetwork:              false,
 				UseMavenLocalRepository: false,
 			}
-			parser, cleanupFn, err := newJavaArchiveParser(
-				ctx,
+			parser, cleanupFn, err := newJavaArchiveParser(context.Background(),
 				file.LocationReadCloser{
 					Location:   file.NewLocation(fixture.Name()),
 					ReadCloser: fixture,
@@ -1393,8 +1391,7 @@ func Test_deterministicMatchingPomProperties(t *testing.T) {
 					fixture, err := os.Open(fixturePath)
 					require.NoError(t, err)
 
-					parser, cleanupFn, err := newJavaArchiveParser(
-						ctx,
+					parser, cleanupFn, err := newJavaArchiveParser(context.Background(),
 						file.LocationReadCloser{
 							Location:   file.NewLocation(fixture.Name()),
 							ReadCloser: fixture,
@@ -1522,4 +1519,26 @@ func Test_corruptJarArchive(t *testing.T) {
 		FromFile(t, "test-fixtures/corrupt/example.jar").
 		WithError().
 		TestParser(t, ap.parseJavaArchive)
+}
+
+func Test_jarPomPropertyResolutionDoesNotPanic(t *testing.T) {
+	jarName := generateJavaMetadataJarFixture(t, "commons-lang3-3.12.0", "jar")
+	fixture, err := os.Open(jarName)
+	require.NoError(t, err)
+
+	ctx := context.TODO()
+	// setup parser
+	ap, cleanupFn, err := newJavaArchiveParser(context.Background(),
+		file.LocationReadCloser{
+			Location:   file.NewLocation(fixture.Name()),
+			ReadCloser: fixture,
+		}, false, ArchiveCatalogerConfig{
+			UseMavenLocalRepository: true,
+			MavenLocalRepositoryDir: "internal/maven/test-fixtures/maven-repo",
+		})
+	defer cleanupFn()
+	require.NoError(t, err)
+
+	_, _, err = ap.parse(ctx, nil)
+	require.NoError(t, err)
 }

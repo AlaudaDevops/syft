@@ -41,8 +41,8 @@ require (
 	github.com/facebookincubator/nvdtools v0.1.5
 	github.com/github/go-spdx/v2 v2.3.3
 	github.com/gkampitakis/go-snaps v0.5.13
-	github.com/go-git/go-billy/v5 v5.6.2
-	github.com/go-git/go-git/v5 v5.16.5
+	github.com/go-git/go-billy/v5 v5.8.0
+	github.com/go-git/go-git/v5 v5.17.1
 	github.com/go-test/deep v1.1.1
 	github.com/go-viper/mapstructure/v2 v2.4.0
 	github.com/gohugoio/hashstructure v0.5.0
@@ -296,3 +296,5 @@ retract (
 	v0.53.2
 	v0.53.1 // published accidentally with incorrect license in depdencies
 )
+
+replace github.com/docker/docker => github.com/moby/moby v28.5.3-0.20260325154711-31a1689cb0a1+incompatible

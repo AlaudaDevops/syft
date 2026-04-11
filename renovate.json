@@ -11,9 +11,5 @@
   ],
   "assignees": [
     "yuzichen12123"
-  ],
-  "ignorePaths": [
-    "**/test/**",
-    "**/test-fixtures/**"
   ]
 }

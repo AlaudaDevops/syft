@@ -1,0 +1,46 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: tektoncd-tools-syft
+  title: Tektoncd Tools - Syft
+  description: Syft 是用于生成软件物料清单（SBOM）的开源工具，支持多种镜像和文件系统格式。在 Tekton 流水线中作为供应链安全任务镜像的核心依赖。
+  tags:
+    - security
+    - supply-chain
+    - sbom
+    - open-source-fork
+  links:
+    - url: https://github.com/AlaudaDevops/syft
+      title: GitHub Repository
+      icon: github
+    - url: https://build-sonar.alauda.cn/dashboard?id=github.com-AlaudaDevops-syft
+      title: SonarQube
+      icon: dashboard
+    - url: https://github.com/anchore/syft
+      title: Upstream Repository
+      icon: github
+  annotations:
+    # github plugin
+    github.com/project-slug: AlaudaDevops/syft
+    # sonarqube plugin
+    sonarqube.org/project-key: github.com-AlaudaDevops-syft
+    # 开源组件代码仓库地址，格式：${url}/${project}/${repo}
+    acp.cpaas.io/open-source-component-repo: https://github.com/anchore/syft
+    # 开源组件的版本信息，只适用于开源组件，自研组件默认不收集版本信息,格式 ${version}
+    acp.cpaas.io/open-source-component-version: v1.42.4
+    # 开源组件的license信息,格式 ${license}
+    acp.cpaas.io/open-source-component-license: Apache
+    # 开源组件的license地址,格式 ${url}/${project}/${repo}/${license-path}
+    acp.cpaas.io/open-source-component-license_url: https://github.com/anchore/syft/blob/main/LICENSE
+    # backstage techdocs plugin
+    backstage.io/techdocs-ref: dir:../
+    acp.cpaas.io/owner: qingliu@alauda.io
+
+    # 组件属性，区别是否部署时必带的核心组件,可选值为 core 和 plugin。
+    acp.cpaas.io/functional-attributes: plugin
+
+spec:
+  type: service
+  system: system:alauda-devops-system
+  lifecycle: production
+  owner: devops

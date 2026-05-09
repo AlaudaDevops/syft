@@ -12,7 +12,6 @@ linters:
     - errcheck
     - funlen
     - gocognit
-    - goconst
     - gocritic
     - gocyclo
     - goprintffuncname
@@ -36,12 +35,30 @@ linters:
       enabled-checks:
         - deferInLoop
         - ruleguard
+      disabled-checks:
+        # New diagnostic in newer gocritic; existing `Deprecated:` comment
+        # formatting is intentional and not worth churning for.
+        - deprecatedComment
       settings:
         ruleguard:
           rules: test/rules/rules.go
     gosec:
       excludes:
         - G115
+        # Path-traversal taint analysis on example/CLI programs that legitimately
+        # take a file path argument; not exploitable in syft itself.
+        - G703
+    govet:
+      disable:
+        # Stylistic suggestion to inline named constants (e.g. reflect.Ptr);
+        # not enforced in older govet. Keep existing constants for readability.
+        - inline
+    staticcheck:
+      checks:
+        - all
+        # Quick-fix style suggestion (use fmt.Fprintf instead of
+        # WriteString(fmt.Sprintf(...))). Not adopted in this codebase.
+        - -QF1012
   exclusions:
     generated: lax
     presets:

@@ -1,0 +1,20 @@
+From: Alauda DevOps <devops@alauda.io>
+Subject: [PATCH] fix(syft): use %d format verb for integer fields in SearchResult.String()
+
+SeekPosition and Length are int64 types; using %q (which adds double-quotes
+and escapes) produces misleading output. Switch to %d for correct numeric
+representation.
+---
+ syft/file/search_result.go | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/syft/file/search_result.go b/syft/file/search_result.go
+--- a/syft/file/search_result.go
++++ b/syft/file/search_result.go
+@@ -26,5 +26,5 @@
+ }
+ 
+ func (s SearchResult) String() string {
+-	return fmt.Sprintf("SearchResult(classification=%q seek=%q length=%q)", s.Classification, s.SeekPosition, s.Length)
++	return fmt.Sprintf("SearchResult(classification=%q seek=%d length=%d)", s.Classification, s.SeekPosition, s.Length)
+ }

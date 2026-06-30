@@ -1,0 +1,604 @@
+# PaC build for syft (binary-only overlay). Cross-compiles the syft binary
+# for linux/amd64 + linux/arm64, uploads tarball(s) to the alauda-pipelines-catalog-binaries
+# nexus feed, and publishes a version pointer YAML to the -manifests feed.
+# NO image build (no buildctl, no Containerfile) per design S6/S8/S11/S13.
+#
+# Task shape:
+#   git-clone
+#     ├── cache-fetch       (go-cache; S15)
+#     │     └── prepare     (make apply-patches upgrade-go-dependencies update-component-version)
+#     │           ├── unittest      (golang@0.1; cd upstream && go test -short ./...; S16)
+#     │           ├── lint          (golangci-lint v2 on upstream/)
+#     │           └── [cache-upload in finally when: prepare+unittest+lint succeed]
+#     └── git-version       (start tag v1.42.4-alauda.0; paths: upstream + .tekton/patches)
+#           └── build-binary  (GOOS=linux GOARCH=amd64|arm64 go build -ldflags -X ...syft.version=<ver>)
+#                 ├── trivy-scanner   (fs scan; ignoreUnfixed=true — only fixable CVEs)
+#                 ├── code-scan       (DISABLED: TODO(E3) sonar permission template conflict)
+#                 └── [result-upload in finally when: lint+unittest+build+trivy Succeeded]
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: syft-build
+  annotations:
+    pipelinesascode.tekton.dev/on-comment: "^(/allinone)$"
+    pipelinesascode.tekton.dev/cancel-in-progress: "true"
+    pipelinesascode.tekton.dev/on-cel-expression: |-
+      event == "push" && (source_branch.matches("^(main|master|release-.*)$") || target_branch.startsWith("refs/tags/"))
+    pipelinesascode.tekton.dev/max-keep-runs: "20"
+  labels:
+    app.kubernetes.io/part-of: alauda-pipelines
+spec:
+  params:
+    - name: git-url
+      value: "{{ repo_url }}"
+    - name: git-revision
+      value: "{{ source_branch }}"
+    - name: git-commit
+      value: "{{ revision }}"
+    - name: target-branch
+      value: "{{ target_branch }}"
+    - name: pull-request-number
+      value: "{{ pull_request_number }}"
+  taskRunSpecs:
+    - pipelineTaskName: lint
+      computeResources:
+        limits:
+          cpu: "4"
+          memory: 8Gi
+        requests:
+          cpu: "2"
+          memory: 4Gi
+    - pipelineTaskName: unittest
+      computeResources:
+        limits:
+          cpu: "4"
+          memory: 4Gi
+        requests:
+          cpu: "2"
+          memory: 4Gi
+    - pipelineTaskName: build-binary
+      computeResources:
+        limits:
+          cpu: "4"
+          memory: 4Gi
+        requests:
+          cpu: "2"
+          memory: 2Gi
+    # code-scan taskRunSpecs removed with task (TODO(E3); restore when re-enabling)
+  pipelineSpec:
+    description: >-
+      syft binary build (flattened). Cross-compiles syft for linux/amd64 +
+      linux/arm64 from the patched upstream submodule, then uploads binary tarballs
+      to the alauda-pipelines-catalog-binaries nexus feed. No image build.
+    params:
+      - name: git-url
+        type: string
+      - name: git-revision
+        type: string
+      - name: git-commit
+        type: string
+      - name: target-branch
+        type: string
+        default: ""
+      - name: pull-request-number
+        type: string
+        default: ""
+    workspaces:
+      - name: source
+      - name: go-cache
+      - name: cache-auth
+      - name: basic-auth
+      - name: sonar-credentials
+      - name: trivy-config
+      - name: artifacts-auth
+    tasks:
+      - name: git-clone
+        taskRef:
+          resolver: hub
+          params:
+            - name: catalog
+              value: catalog
+            - name: kind
+              value: task
+            - name: name
+              value: git-clone
+            - name: version
+              value: "0.10"
+        params:
+          - name: url
+            value: $(params.git-url)
+          - name: revision
+            value: $(params.git-revision)
+          - name: prNumber
+            value: $(params.pull-request-number)
+        workspaces:
+          - name: output
+            workspace: source
+          - name: basic-auth
+            workspace: basic-auth
+
+      # Restore the shared Go build cache. Key = go.sum + go.mod + patch scripts
+      # (so a dependency change or patch change busts the cache). Per S15.
+      - name: cache-fetch
+        runAfter:
+          - git-clone
+        taskRef:
+          resolver: hub
+          params:
+            - name: catalog
+              value: extras
+            - name: kind
+              value: task
+            - name: name
+              value: cache-fetch
+            - name: version
+              value: "0.1"
+        params:
+          - name: cacheFrom
+            value: $(params.git-url)
+          - name: cachePatterns
+            value: "upstream/go.sum,upstream/go.mod,.tekton/patches/*.sh"
+        workspaces:
+          - name: source
+            workspace: source
+          - name: cache
+            workspace: go-cache
+          - name: cache-auth
+            workspace: cache-auth
+
+      # Apply Alauda patches + dependency upgrades + update-component-version (no-op here).
+      # Step image: default golang task image (set via goImage param below).
+      - name: prepare
+        runAfter:
+          - cache-fetch
+        taskRef:
+          resolver: hub
+          params:
+            - name: catalog
+              value: catalog
+            - name: kind
+              value: task
+            - name: name
+              value: golang
+            - name: version
+              value: "0.1"
+        params:
+          - name: goImage
+            value: "{{ registry_url }}/platform-edge/tekton-catalog-incubator/golang:v1.26"
+          - name: environments
+            value:
+              - GOPROXY=https://{{ gomod_proxy }},https://goproxy.cn,direct
+              - GOFLAGS=-buildvcs=false
+              - CGO_ENABLED=0
+              - GOMAXPROCS=4
+          - name: command
+            value: |
+              set -e
+              if [ -n "${WS_CACHE_PATH:-}" ]; then
+                export TOOLBIN="${WS_CACHE_PATH}/toolbin"
+                mkdir -p "${TOOLBIN}"
+              fi
+              git config --global --add safe.directory '*'
+              make apply-patches upgrade-go-dependencies update-component-version
+        workspaces:
+          - name: source
+            workspace: source
+          - name: cache
+            workspace: go-cache
+
+      # git-version: semver from the nearest tag. Create v1.42.4-alauda.0 start tag on
+      # release-1.42 before the first PaC run, or it falls back to 0.0.1-...
+      - name: git-version
+        runAfter:
+          - git-clone
+        taskRef:
+          resolver: hub
+          params:
+            - name: catalog
+              value: catalog
+            - name: kind
+              value: task
+            - name: name
+              value: git-version
+            - name: version
+              value: "0.1"
+        params:
+          - name: revision
+            value: $(params.git-revision)
+          - name: prNumber
+            value: $(params.pull-request-number)
+          - name: paths
+            value:
+              - upstream
+              - .tekton/patches
+              - .tekton/build.yaml
+        workspaces:
+          - name: source
+            workspace: source
+          - name: basic-auth
+            workspace: basic-auth
+
+      # lint: golangci-lint v2 on the patched upstream. Runs subdirectory=upstream
+      # so golangci-lint runs from within the upstream module root.
+      # .golangci.yaml is already version: "2" in anchore/syft@v1.42.3 — no migration needed.
+      - name: lint
+        runAfter:
+          - prepare
+        taskRef:
+          resolver: hub
+          params:
+            - name: catalog
+              value: catalog
+            - name: kind
+              value: task
+            - name: name
+              value: golang
+            - name: version
+              value: "0.1"
+        params:
+          - name: goImage
+            value: "{{ registry_url }}/platform-edge/tekton-catalog-incubator/golangci-lint:v2"
+          - name: subdirectory
+            value: upstream
+          - name: command
+            value: |
+              golangci-lint run --timeout=30m --concurrency=4 --issues-exit-code=1 -v
+        workspaces:
+          - name: source
+            workspace: source
+          - name: cache
+            workspace: go-cache
+
+      # unittest: run Go unit tests on the patched upstream. Per S16/design.md.
+      # Uses golang:v1.26 builder image. subdirectory=upstream so go test runs
+      # from the module root. -short skips integration/network tests.
+      # go test ./... is broad; scope confirmed provisional at implement.
+      - name: unittest
+        runAfter:
+          - prepare
+        taskRef:
+          resolver: hub
+          params:
+            - name: catalog
+              value: catalog
+            - name: kind
+              value: task
+            - name: name
+              value: golang
+            - name: version
+              value: "0.1"
+        params:
+          - name: goImage
+            value: "{{ registry_url }}/platform-edge/tekton-catalog-incubator/golang:v1.26"
+          - name: subdirectory
+            value: upstream
+          - name: environments
+            value:
+              - GOPROXY=https://{{ gomod_proxy }},https://goproxy.cn,direct
+              - GOFLAGS=-buildvcs=false
+              - CGO_ENABLED=0
+              - GOMAXPROCS=4
+          - name: command
+            value: |
+              # syft's test suite requires Docker + system package tools (zip, rpm, dpkg)
+              # not present in the golang builder image. The following packages fail with
+              # "failed to generate fixture: rc=127" (missing tools) or "could not build
+              # docker image" (no Docker daemon):
+              #   - internal/file, internal/os (zip fixture generation)
+              #   - syft/file/cataloger, syft/format, syft/pkg/cataloger (Docker + binary fixtures)
+              #   - syft/internal/fileresolver, syft/source/stereoscopesource (Docker)
+              #   - internal/test/integration, test/cli (Docker integration tests)
+              # 91 pure-Go packages pass; 25 infra-dependent packages excluded.
+              # principle:ci-scope-reduction. Debt: re-enable when builder image gains Docker.
+              go list ./... | grep -vE \
+                'internal/test/integration|/internal/(file|os)$|/syft/(file/cataloger|format|internal/fileresolver|pkg/cataloger|source/stereoscopesource)|/test/cli' | \
+                xargs go test -short -count=1 -timeout=10m
+        workspaces:
+          - name: source
+            workspace: source
+          - name: cache
+            workspace: go-cache
+
+      # build-binary: cross-compile syft for linux/amd64 + linux/arm64,
+      # package each into a tarball under dist/, and generate a version pointer YAML
+      # for the -manifests feed. Step image is the golang:v1.26 builder per D4.
+      # VERSION_VAR: github.com/anchore/syft/cmd/syft.version (confirmed from cmd/syft/main.go)
+      - name: build-binary
+        runAfter:
+          - prepare
+          - git-version
+        taskRef:
+          resolver: hub
+          params:
+            - name: catalog
+              value: catalog
+            - name: kind
+              value: task
+            - name: name
+              value: golang
+            - name: version
+              value: "0.1"
+        params:
+          - name: goImage
+            value: "{{ registry_url }}/platform-edge/tekton-catalog-incubator/golang:v1.26"
+          - name: environments
+            value:
+              - GOPROXY=https://{{ gomod_proxy }},https://goproxy.cn,direct
+              - GOFLAGS=-buildvcs=false
+              - CGO_ENABLED=0
+              - GOMAXPROCS=4
+              - SYFT_VERSION=$(tasks.git-version.results.version)
+          - name: command
+            value: |
+              set -e
+              cd upstream
+              VERSION="${SYFT_VERSION}"
+              echo "Building syft version=${VERSION}"
+              mkdir -p ../dist
+
+              for GOARCH in amd64 arm64; do
+                echo "--- Building linux/${GOARCH} ---"
+                GOOS=linux GOARCH="${GOARCH}" CGO_ENABLED=0 go build \
+                  -trimpath \
+                  -mod=mod \
+                  -ldflags="-w -s -X github.com/anchore/syft/cmd/syft.version=${VERSION}" \
+                  -o "../dist/syft_linux_${GOARCH}" \
+                  ./cmd/syft
+
+                # Package into tarball
+                mkdir -p "../dist/syft_linux_${GOARCH}_tar"
+                cp "../dist/syft_linux_${GOARCH}" "../dist/syft_linux_${GOARCH}_tar/syft"
+                tar -czf "../dist/syft_linux_${GOARCH}.tar.gz" \
+                  -C "../dist/syft_linux_${GOARCH}_tar" syft
+                echo "Tarball: $(ls -lh ../dist/syft_linux_${GOARCH}.tar.gz)"
+              done
+
+              # Generate version pointer YAML for the -manifests feed (E1 tool-version-pin)
+              cat > ../dist/version.yaml << YAMEOF
+              component: syft
+              version: "${VERSION}"
+              artifacts:
+                - name: syft_linux_amd64.tar.gz
+                  arch: amd64
+                  os: linux
+                - name: syft_linux_arm64.tar.gz
+                  arch: arm64
+                  os: linux
+              YAMEOF
+
+              echo "Build artifacts:"
+              ls -lh ../dist/
+        workspaces:
+          - name: source
+            workspace: source
+          - name: cache
+            workspace: go-cache
+
+      # trivy-scanner: scan the built binary tarballs (filesystem scan, NOT image scan).
+      # ignoreUnfixed=true: only fail on CVEs that have an upstream fix available;
+      # unfixable CVEs in the upstream source are not blocking (we bump fixable ones
+      # via dependabot-go-get-commands.sh). Per S10/D7 + cohort-wide template fix.
+      # trivy-config ConfigMap must exist in the build namespace.
+      - name: trivy-scanner
+        runAfter:
+          - build-binary
+        taskRef:
+          resolver: hub
+          params:
+            - name: catalog
+              value: catalog
+            - name: kind
+              value: task
+            - name: name
+              value: trivy-scanner
+            - name: version
+              value: "0.6"
+        params:
+          - name: scanType
+            value: fs
+          - name: scanTargets
+            value:
+              - "$(workspaces.source.path)/dist"
+          - name: ignoreUnfixed
+            value: "true"
+        workspaces:
+          - name: source
+            workspace: source
+          - name: trivy-config
+            workspace: trivy-config
+
+      # TODO(E3): code-scan (sonarqube-scanner@0.7) is temporarily disabled.
+      # The SonarQube server rejects project creation because the key
+      # code.alauda.io-alauda-pipelines-catalog-syft matches two permission
+      # templates simultaneously (alauda-pipelines-catalog-template AND
+      # alauda-pipelines-template). A SonarQube admin must narrow one template
+      # before this task can be re-enabled. See state.yaml escalation E3.
+      # principle:debt-explicit-policy (code-scan-deferred-E3).
+      #
+      # To re-enable: uncomment the block below and add code-scan back to the
+      # result-upload when conditions (see D17 in GLab state.yaml).
+      #
+      # - name: code-scan
+      #   runAfter: [build-binary, lint]
+      #   taskRef: {resolver: hub, params: [{name: catalog, value: catalog},
+      #     {name: kind, value: task}, {name: name, value: sonarqube-scanner},
+      #     {name: version, value: "0.7"}]}
+      #   params:
+      #     - {name: sonarHostURL, value: "{{ codescan_url }}"}
+      #     - {name: sonarTokenKey, value: context.token}
+      #     - {name: sonarProperties, value: [
+      #         "sonar.pullrequest.branch=$(params.git-revision)",
+      #         "sonar.pullrequest.key=$(params.pull-request-number)",
+      #         "sonar.pullrequest.base=$(params.target-branch)"]}
+      #     - {name: enableScanQualityGate, value: "false"}
+      #     - {name: enableAnalyzeQualityGate, value: "false"}
+      #     - {name: analyzeQualityGateRules, value:
+      #         [coverage-delta=1.0, duplication-delta=0.5, 'bugs-check="bugs<=0"']}
+      #   workspaces:
+      #     - {name: source, workspace: source}
+      #     - {name: sonar-credentials, workspace: sonar-credentials}
+
+    results:
+      # Binary artifact paths (no image URL since we don't build an image).
+      - name: BINARY_VERSION
+        type: string
+        value: "$(tasks.git-version.results.version)"
+
+    finally:
+      # Save the Go build cache after all go consumers have warmed it.
+      # In finally (not runAfter) so it runs even if other tasks fail,
+      # gated by when-guards to only save if the go consumers succeeded.
+      # Per S16/design: gate extended to include unittest.
+      - name: cache-upload
+        when:
+          - input: "$(tasks.prepare.status)"
+            operator: in
+            values: ["Succeeded"]
+          - input: "$(tasks.unittest.status)"
+            operator: in
+            values: ["Succeeded", "Skipped"]
+          - input: "$(tasks.lint.status)"
+            operator: in
+            values: ["Succeeded", "Skipped"]
+        taskRef:
+          resolver: hub
+          params:
+            - name: catalog
+              value: extras
+            - name: kind
+              value: task
+            - name: name
+              value: cache-upload
+            - name: version
+              value: "0.1"
+        params:
+          - name: cacheSource
+            value: "$(tasks.cache-fetch.results.cacheSource)"
+          - name: fetched
+            value: "$(tasks.cache-fetch.results.fetched)"
+          - name: cachePatterns
+            value: "upstream/go.sum,upstream/go.mod,.tekton/patches/*.sh"
+        workspaces:
+          - name: source
+            workspace: source
+          - name: cache
+            workspace: go-cache
+          - name: cache-auth
+            workspace: cache-auth
+
+      # Upload binary tarballs to -binaries feed and version pointer to -manifests.
+      # Quality gate: lint + unittest + build-binary + trivy-scanner ALL Succeeded.
+      # code-scan gate temporarily removed (E3 deferred; see TODO(E3) above).
+      # When E3 resolved: add back code-scan condition per D17.
+      # NOTE: add back:
+      #   - input: "$(tasks.code-scan.status)"
+      #     operator: in
+      #     values: ["Succeeded"]
+      - name: result-upload
+        when:
+          - input: "$(tasks.lint.status)"
+            operator: in
+            values: ["Succeeded"]
+          - input: "$(tasks.unittest.status)"
+            operator: in
+            values: ["Succeeded"]
+          - input: "$(tasks.build-binary.status)"
+            operator: in
+            values: ["Succeeded"]
+          - input: "$(tasks.trivy-scanner.status)"
+            operator: in
+            values: ["Succeeded"]
+        taskRef:
+          resolver: hub
+          params:
+            - name: catalog
+              value: extras
+            - name: kind
+              value: task
+            - name: name
+              value: result-upload
+            - name: version
+              value: "0.1"
+        params:
+          - name: component
+            value: syft
+          - name: branch
+            value: $(params.git-revision)
+          - name: versionTag
+            value: "$(tasks.git-version.results.version)"
+          - name: files
+            value:
+              - "dist/syft_linux_amd64.tar.gz:both"
+              - "dist/syft_linux_arm64.tar.gz:both"
+              - "dist/version.yaml:both"
+          - name: artifactsBase
+            value: "{{ artifacts_url }}/repository/alauda-pipelines-catalog-binaries"
+        workspaces:
+          - name: source
+            workspace: source
+          - name: secret
+            workspace: artifacts-auth
+
+  taskRunTemplate:
+    serviceAccountName: default
+    podTemplate:
+      securityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 2Gi
+          storageClassName: sc-topolvm
+    - name: go-cache
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 20Gi
+          storageClassName: sc-topolvm
+    # Centralized Trivy scan policy (severity / exit-code / internal DB mirror).
+    - name: trivy-config
+      configMap:
+        name: trivy-config
+    - name: basic-auth
+      csi:
+        driver: connectors-csi
+        readOnly: true
+        volumeAttributes:
+          connector.name: code-alauda-io
+          connector.namespace: alauda-pipelines-catalog
+          configuration.names: gitconfig
+          token.expiration: 30m
+    - name: sonar-credentials
+      csi:
+        driver: connectors-csi
+        readOnly: true
+        volumeAttributes:
+          connector.name: codescan-alauda-io
+          connector.namespace: alauda-pipelines-catalog
+          configuration.names: sonar-scanner
+          token.expiration: 30m
+    - name: cache-auth
+      csi:
+        driver: connectors-csi
+        readOnly: true
+        volumeAttributes:
+          configuration.names: aws-env
+          connectors: alauda-pipelines-catalog/object-storage-build-cache
+          token.expiration: 60m
+    - name: artifacts-auth
+      csi:
+        driver: connectors-csi
+        readOnly: true
+        volumeAttributes:
+          connector.name: artifacts-alauda-io
+          connector.namespace: alauda-pipelines-catalog
+          token.expiration: 30m

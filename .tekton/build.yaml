@@ -64,7 +64,14 @@ spec:
         requests:
           cpu: "2"
           memory: 2Gi
-    # code-scan taskRunSpecs removed with task (TODO(E3); restore when re-enabling)
+    - pipelineTaskName: code-scan
+      computeResources:
+        limits:
+          cpu: "2"
+          memory: 2Gi
+        requests:
+          cpu: "1"
+          memory: 1Gi
   pipelineSpec:
     description: >-
       syft binary build (flattened). Cross-compiles syft for linux/amd64 +
@@ -407,36 +414,26 @@ spec:
           - name: trivy-config
             workspace: trivy-config
 
-      # TODO(E3): code-scan (sonarqube-scanner@0.7) is temporarily disabled.
-      # The SonarQube server rejects project creation because the key
-      # code.alauda.io-alauda-pipelines-catalog-syft matches two permission
-      # templates simultaneously (alauda-pipelines-catalog-template AND
-      # alauda-pipelines-template). A SonarQube admin must narrow one template
-      # before this task can be re-enabled. See state.yaml escalation E3.
-      # principle:debt-explicit-policy (code-scan-deferred-E3).
-      #
-      # To re-enable: uncomment the block below and add code-scan back to the
-      # result-upload when conditions (see D17 in GLab state.yaml).
-      #
-      # - name: code-scan
-      #   runAfter: [build-binary, lint]
-      #   taskRef: {resolver: hub, params: [{name: catalog, value: catalog},
-      #     {name: kind, value: task}, {name: name, value: sonarqube-scanner},
-      #     {name: version, value: "0.7"}]}
-      #   params:
-      #     - {name: sonarHostURL, value: "{{ codescan_url }}"}
-      #     - {name: sonarTokenKey, value: context.token}
-      #     - {name: sonarProperties, value: [
-      #         "sonar.pullrequest.branch=$(params.git-revision)",
-      #         "sonar.pullrequest.key=$(params.pull-request-number)",
-      #         "sonar.pullrequest.base=$(params.target-branch)"]}
-      #     - {name: enableScanQualityGate, value: "false"}
-      #     - {name: enableAnalyzeQualityGate, value: "false"}
-      #     - {name: analyzeQualityGateRules, value:
-      #         [coverage-delta=1.0, duplication-delta=0.5, 'bugs-check="bugs<=0"']}
-      #   workspaces:
-      #     - {name: source, workspace: source}
-      #     - {name: sonar-credentials, workspace: sonar-credentials}
+      # code-scan: SonarQube scan. E3 resolved server-side 2026-07-01.
+      - name: code-scan
+        runAfter: [build-binary, lint]
+        taskRef: {resolver: hub, params: [{name: catalog, value: catalog},
+          {name: kind, value: task}, {name: name, value: sonarqube-scanner},
+          {name: version, value: "0.7"}]}
+        params:
+          - {name: sonarHostURL, value: "{{ codescan_url }}"}
+          - {name: sonarTokenKey, value: context.token}
+          - {name: sonarProperties, value: [
+              "sonar.pullrequest.branch=$(params.git-revision)",
+              "sonar.pullrequest.key=$(params.pull-request-number)",
+              "sonar.pullrequest.base=$(params.target-branch)"]}
+          - {name: enableScanQualityGate, value: "false"}
+          - {name: enableAnalyzeQualityGate, value: "false"}
+          - {name: analyzeQualityGateRules, value:
+              [coverage-delta=1.0, duplication-delta=0.5, 'bugs-check="bugs<=0"']}
+        workspaces:
+          - {name: source, workspace: source}
+          - {name: sonar-credentials, workspace: sonar-credentials}
 
     results:
       # Binary artifact paths (no image URL since we don't build an image).
@@ -488,12 +485,6 @@ spec:
 
       # Upload binary tarballs to -binaries feed and version pointer to -manifests.
       # Quality gate: lint + unittest + build-binary + trivy-scanner ALL Succeeded.
-      # code-scan gate temporarily removed (E3 deferred; see TODO(E3) above).
-      # When E3 resolved: add back code-scan condition per D17.
-      # NOTE: add back:
-      #   - input: "$(tasks.code-scan.status)"
-      #     operator: in
-      #     values: ["Succeeded"]
       - name: result-upload
         when:
           - input: "$(tasks.lint.status)"
@@ -506,6 +497,9 @@ spec:
             operator: in
             values: ["Succeeded"]
           - input: "$(tasks.trivy-scanner.status)"
+            operator: in
+            values: ["Succeeded"]
+          - input: "$(tasks.code-scan.status)"
             operator: in
             values: ["Succeeded"]
         taskRef:

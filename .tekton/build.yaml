@@ -426,7 +426,8 @@ spec:
           - {name: sonarProperties, value: [
               "sonar.pullrequest.branch=$(params.git-revision)",
               "sonar.pullrequest.key=$(params.pull-request-number)",
-              "sonar.pullrequest.base=$(params.target-branch)"]}
+              "sonar.pullrequest.base=$(params.target-branch)",
+              "sonar.exclusions=**/*.java"]}
           - {name: enableScanQualityGate, value: "false"}
           - {name: enableAnalyzeQualityGate, value: "false"}
           - {name: analyzeQualityGateRules, value:

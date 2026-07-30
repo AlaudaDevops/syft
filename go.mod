@@ -87,7 +87,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f
 	golang.org/x/mod v0.36.0
-	golang.org/x/net v0.55.0
+	golang.org/x/net v0.56.0
 	modernc.org/sqlite v1.46.1
 )
 
